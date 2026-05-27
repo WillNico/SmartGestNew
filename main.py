@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 import importlib
 import traceback
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QAction, QIcon, QPalette, QColor
@@ -19,6 +20,11 @@ APP_TITLE = "SmartGest"
 APP_SUBTITLE = "Gestor de Estoque"
 CREDITOS = "Desenvolvido por Willian Nicoletti"
 SENHA_ESTOQUE_ADM = "147258"
+
+
+def resource_path(relative_path: str) -> str:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return str(base / relative_path)
 
 # ---------- helpers de tema ----------
 def make_light_palette():
@@ -332,7 +338,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationDisplayName(APP_TITLE)
     app.setStyle("Fusion")
-    app.setWindowIcon(QIcon("assets/icon.ico"))  # define o ícone global aqui
+    app.setWindowIcon(QIcon(resource_path("assets/icon.ico")))  # define o ícone global aqui
     win = MainWindow()
     sys.exit(app.exec())
 
