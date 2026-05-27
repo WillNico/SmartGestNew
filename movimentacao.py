@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_TITLE = "Movimentação de Peças"
+SEARCH_LIMIT = 500
 
 # ---------------- Helpers ----------------
 def _err(self, title, msg):
@@ -61,10 +62,8 @@ class SearchDialog(QDialog):
     def _run_search(self):
         termo = self.ed.text().strip().upper()
         rows = self._search_fn(termo)
-        self.table.setRowCount(0)
-        for r in rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+        self.table.setRowCount(len(rows))
+        for row, r in enumerate(rows):
             for c, val in enumerate(r):
                 item = QTableWidgetItem("" if val is None else str(val))
                 # alinhamentos básicos
@@ -424,23 +423,30 @@ class MovimentacaoApp(QMainWindow):
             return
 
         try:
-            self.cursor.execute("SELECT saldo FROM produtos WHERE UPPER(codigo)=%s", (cod,))
+            if tipo == "ENTRADA":
+                self.cursor.execute("""
+                    UPDATE produtos
+                    SET saldo=COALESCE(saldo,0)+%s
+                    WHERE UPPER(codigo)=%s
+                    RETURNING saldo
+                """, (qt, cod))
+            else:
+                self.cursor.execute("""
+                    UPDATE produtos
+                    SET saldo=COALESCE(saldo,0)-%s
+                    WHERE UPPER(codigo)=%s AND COALESCE(saldo,0) >= %s
+                    RETURNING saldo
+                """, (qt, cod, qt))
             r = self.cursor.fetchone()
             if not r:
-                _err(self, "Validação", "Peça não existe.")
+                self.cursor.execute("SELECT saldo FROM produtos WHERE UPPER(codigo)=%s", (cod,))
+                saldo_row = self.cursor.fetchone()
+                self.conn.rollback()
+                if saldo_row:
+                    _err(self, "Validação", f"Saldo insuficiente ({saldo_row[0] or 0}).")
+                else:
+                    _err(self, "Validação", "Peça não existe.")
                 return
-            saldo = r[0] or 0
-            if tipo == "ENTRADA":
-                novo = saldo + qt
-            else:
-                if qt > saldo:
-                    _err(self, "Validação", f"Saldo insuficiente ({saldo}).")
-                    return
-                novo = saldo - qt
-
-            # UPDATE saldo
-            self.cursor.execute("UPDATE produtos SET saldo=%s WHERE UPPER(codigo)=%s", (novo, cod))
-            self.conn.commit()
 
             # INSERT histórico
             self.cursor.execute("""
@@ -460,7 +466,6 @@ class MovimentacaoApp(QMainWindow):
         self.statusBar().showMessage("Movimentação salva.", 2000)
         self._carregar_historico()
         self._carregar_estoque_minimo()
-        QMessageBox.information(self, "Movimentação", "Movimentação realizada com sucesso!")
 
     # ---------- Pesquisas ----------
     def _abrir_pesquisa_peca(self):
@@ -472,7 +477,8 @@ class MovimentacaoApp(QMainWindow):
                     FROM produtos
                     WHERE UPPER(codigo) LIKE %s OR UPPER(descricao) LIKE %s
                     ORDER BY descricao
-                """, (like, like))
+                    LIMIT %s
+                """, (like, like, SEARCH_LIMIT))
                 return self.cursor.fetchall()
             except DatabaseError as e:
                 _err(self, "Pesquisar Peças", f"Erro na consulta.\n\n{e}")
@@ -495,7 +501,8 @@ class MovimentacaoApp(QMainWindow):
                     FROM tecnico
                     WHERE UPPER(codigo) LIKE %s OR UPPER(nome) LIKE %s
                     ORDER BY nome
-                """, (like, like))
+                    LIMIT %s
+                """, (like, like, SEARCH_LIMIT))
                 return self.cursor.fetchall()
             except DatabaseError as e:
                 _err(self, "Pesquisar Técnicos", f"Erro na consulta.\n\n{e}")

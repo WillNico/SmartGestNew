@@ -77,6 +77,8 @@ class FamiliaDialog(QDialog):
         if not cod or not nome:
             return _err(self, "Validação", "Preencha código e nome.")
 
+        conn = None
+        cur = None
         try:
             conn = self._conn(); cur = conn.cursor()
             # checa duplicidades
@@ -92,9 +94,15 @@ class FamiliaDialog(QDialog):
                 (codigo, nome, data_movimentacao, tipo_movimentacao, quantidade_movimentada)
                 VALUES (%s,%s,CURRENT_TIMESTAMP,%s,%s)
             """, (cod, nome, "NOVAFAMILIA", 0))
-            conn.commit(); cur.close(); conn.close()
+            conn.commit()
         except DatabaseError as e:
             _err(self, "Banco", f"Erro ao salvar família.\n\n{e}"); return
+        finally:
+            try:
+                if cur: cur.close()
+                if conn: conn.close()
+            except Exception:
+                pass
 
         _info(self, "OK", "Família salva.")
         self.accept()
@@ -105,22 +113,37 @@ class FamiliaDialog(QDialog):
         cod = (self.edCod.text() or "").strip().upper()
         if not cod:
             return _warn(self, "Dados", "Informe o código da família para excluir.")
+        conn = None
+        cur = None
         try:
             conn = self._conn(); cur = conn.cursor()
             cur.execute("DELETE FROM familias WHERE codigo=%s", (cod,))
-            conn.commit(); cur.close(); conn.close()
+            conn.commit()
         except DatabaseError as e:
             _err(self, "Banco", f"Erro ao excluir.\n\n{e}"); return
+        finally:
+            try:
+                if cur: cur.close()
+                if conn: conn.close()
+            except Exception:
+                pass
         _info(self, "OK", "Família excluída (se existia).")
 
     def _listar_livres(self):
+        conn = None
+        cur = None
         try:
             conn = self._conn(); cur = conn.cursor()
             cur.execute("SELECT codigo FROM familias")
             usados = {str(r[0]).zfill(3) for r in cur.fetchall()}
-            cur.close(); conn.close()
         except DatabaseError as e:
             return _err(self, "Banco", f"Erro ao listar.\n\n{e}")
+        finally:
+            try:
+                if cur: cur.close()
+                if conn: conn.close()
+            except Exception:
+                pass
         livres = [f"{i:03d}" for i in range(1, 1000) if f"{i:03d}" not in usados]
         msg = "Códigos livres (ex.: 001..999):\n\n" + ", ".join(livres[:150])
         _info(self, "Números Disponíveis", msg)
@@ -243,7 +266,12 @@ class CadastroPecaApp(QMainWindow):
         try:
             # usa parte numérica após o ponto para achar o maior sequencial
             self.cursor.execute(
-                "SELECT MAX(split_part(codigo,'.',2)::int) FROM produtos WHERE split_part(codigo,'.',1)=%s",
+                """
+                SELECT MAX(split_part(codigo,'.',2)::int)
+                FROM produtos
+                WHERE split_part(codigo,'.',1)=%s
+                  AND split_part(codigo,'.',2) ~ '^[0-9]+$'
+                """,
                 (fam,)
             )
             r = self.cursor.fetchone()
@@ -286,7 +314,6 @@ class CadastroPecaApp(QMainWindow):
                 INSERT INTO produtos(codigo, descricao, saldo, estoque_minimo, local, valor_un)
                 VALUES (%s,%s,%s,%s,%s,%s)
             """, (codigo, nome, saldo, 2, local, 0))
-            self.conn.commit()
 
             # log histórico
             self.cursor.execute("""
@@ -341,7 +368,6 @@ class CadastroPecaApp(QMainWindow):
 
             self.cursor.execute("UPDATE produtos SET descricao=%s WHERE UPPER(codigo)=%s",
                                 (novo, codigo))
-            self.conn.commit()
 
             self.cursor.execute("""
                 INSERT INTO historico_movimentacoes
@@ -386,6 +412,9 @@ class CadastroPecaApp(QMainWindow):
             if hasattr(self, "conn") and self.conn: self.conn.close()
         except Exception:
             pass
+        p = self.parent()
+        if p and hasattr(p, "show"):
+            p.show(); p.raise_(); p.activateWindow()
         super().closeEvent(e)
 
 

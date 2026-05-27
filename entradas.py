@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_TITLE = "Entradas de Notas"
+SEARCH_LIMIT = 500
 
 def _err(self, title, msg):
     QMessageBox.critical(self, title, msg)
@@ -37,7 +38,11 @@ class SearchDialog(QDialog):
 
         self.ed = QLineEdit(self)
         self.ed.setPlaceholderText("Nome ou código…")
-        self.ed.textChanged.connect(self._run_search)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self._run_search)
+        self.ed.textChanged.connect(lambda: self._debounce.start(250))
+        self.ed.returnPressed.connect(self._run_search)
         root.addWidget(self.ed)
 
         self.table = QTableWidget(self)
@@ -74,18 +79,22 @@ class SearchDialog(QDialog):
                     FROM produtos
                     WHERE UPPER(codigo) LIKE %s OR UPPER(descricao) LIKE %s
                     ORDER BY descricao
-                """, (f"%{termo}%", f"%{termo}%"))
+                    LIMIT %s
+                """, (f"%{termo}%", f"%{termo}%", SEARCH_LIMIT))
             else:
-                self.cursor.execute("SELECT codigo, descricao, saldo FROM produtos ORDER BY descricao")
+                self.cursor.execute(
+                    "SELECT codigo, descricao, saldo FROM produtos ORDER BY descricao LIMIT %s",
+                    (SEARCH_LIMIT,)
+                )
             rows = self.cursor.fetchall()
         except DatabaseError as e:
             _err(self, "Pesquisar Peças", f"Erro na consulta.\n\n{e}")
             rows = []
 
-        self.table.setRowCount(0)
-        for r in rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+        for row, r in enumerate(rows):
             for c, val in enumerate(r):
                 item = QTableWidgetItem("" if val is None else str(val))
                 if c == 2:  # saldo
@@ -93,6 +102,7 @@ class SearchDialog(QDialog):
                 else:
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row, c, item)
+        self.table.setSortingEnabled(sorting)
 
     def _pick(self, _index):
         row = self.table.currentRow()
@@ -101,6 +111,13 @@ class SearchDialog(QDialog):
         cod = self.table.item(row, 0).text()
         self.selected_code = cod
         self.accept()
+
+    def done(self, result):
+        try:
+            self.cursor.close()
+        except Exception:
+            pass
+        super().done(result)
 
 # ---------- janela principal ----------
 class EntradasApp(QMainWindow):
@@ -256,20 +273,17 @@ class EntradasApp(QMainWindow):
 
         try:
             # saldo atual
-            self.cursor.execute("SELECT saldo FROM produtos WHERE UPPER(codigo)=%s", (codigo,))
+            self.cursor.execute("""
+                UPDATE produtos
+                SET saldo=COALESCE(saldo,0)+%s, valor_un=%s
+                WHERE UPPER(codigo)=%s
+                RETURNING saldo
+            """, (int(qt), valor, codigo))
             r = self.cursor.fetchone()
             if r is None:
+                self.conn.rollback()
                 _err(self, "Validação", "Código da peça não encontrado.")
                 return
-            saldo_atual = r[0] if r[0] is not None else 0
-            novo_saldo = int(saldo_atual) + int(qt)
-
-            # UPDATE produtos
-            self.cursor.execute(
-                "UPDATE produtos SET saldo=%s, valor_un=%s WHERE UPPER(codigo)=%s",
-                (novo_saldo, valor, codigo)
-            )
-            self.conn.commit()
 
             # INSERT histórico
             self.cursor.execute("""

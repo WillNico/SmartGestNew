@@ -31,6 +31,7 @@ except Exception:
 
 APP_TITLE = "Visão Geral do Estoque"
 COLS = ("Código", "Descrição", "Saldo", "Local")
+LIST_LIMIT = 1000
 
 def _err(self, title, msg):
     QMessageBox.critical(self, title, msg)
@@ -143,7 +144,7 @@ class EstoqueApp(QMainWindow):
         # 250ms após parar de digitar
         self._debounce.start(250)
 
-    def _run_search(self):
+    def _sql_for_filter(self, *, full: bool):
         termo = (self.edBusca.text() or "").strip().upper()
         sql = """
             SELECT UPPER(codigo), UPPER(descricao), COALESCE(saldo,0), UPPER(COALESCE(local,''))
@@ -155,9 +156,16 @@ class EstoqueApp(QMainWindow):
             sql += " AND (UPPER(codigo) LIKE %s OR UPPER(descricao) LIKE %s)"
             params.extend([f"%{termo}%", f"%{termo}%"])
         sql += " ORDER BY descricao"
+        if not full:
+            sql += " LIMIT %s"
+            params.append(LIST_LIMIT)
+        return sql, tuple(params)
+
+    def _run_search(self):
+        sql, params = self._sql_for_filter(full=False)
     
         try:
-            self.cursor.execute(sql, tuple(params))
+            self.cursor.execute(sql, params)
             rows = self.cursor.fetchall()
         except DatabaseError as e:
             _err(self, "Busca", f"Não foi possível realizar a pesquisa.\n\n{e}")
@@ -186,7 +194,10 @@ class EstoqueApp(QMainWindow):
     
         self.table.setSortingEnabled(True)
         self._update_stats()
-        self.statusBar().showMessage(f"{len(rows)} registros carregados.", 1500)
+        msg = f"{len(rows)} registros carregados."
+        if len(rows) == LIST_LIMIT:
+            msg = f"{LIST_LIMIT} registros carregados. Use a busca para filtrar melhor."
+        self.statusBar().showMessage(msg, 2500)
 
     def _update_stats(self):
         try:
@@ -205,6 +216,17 @@ class EstoqueApp(QMainWindow):
 
         path, _ = QFileDialog.getSaveFileName(self, "Salvar PDF", "estoque.pdf", "PDF (*.pdf)")
         if not path: return
+
+        sql, params = self._sql_for_filter(full=True)
+        try:
+            self.cursor.execute(sql, params)
+            rows = self.cursor.fetchall()
+        except DatabaseError as e:
+            _err(self, "Exportar PDF", f"Erro na consulta para exportação.\n\n{e}")
+            return
+        if not rows:
+            _err(self, "Exportar PDF", "Nada para exportar.")
+            return
 
         try:
             from reportlab.lib.pagesizes import letter, landscape
@@ -241,8 +263,8 @@ class EstoqueApp(QMainWindow):
                 y -= row_h
 
             rows_on_page = 0
-            for r in range(self.table.rowCount()):
-                vals = [self.table.item(r, c).text() if self.table.item(r, c) else "" for c in range(4)]
+            for raw in rows:
+                vals = ["" if v is None else str(v) for v in raw]
                 if rows_on_page and rows_on_page % 28 == 0:
                     c.showPage(); c.setFont("Helvetica", 10)
                     y = height - 40
@@ -269,12 +291,17 @@ class EstoqueApp(QMainWindow):
         if not path: return
 
         try:
-            data = []
-            for r in range(self.table.rowCount()):
-                vals = [self.table.item(r, c).text() if self.table.item(r, c) else "" for c in range(4)]
-                data.append(vals)
+            sql, params = self._sql_for_filter(full=True)
+            self.cursor.execute(sql, params)
+            data = self.cursor.fetchall()
+            if not data:
+                _err(self, "Exportar Excel", "Nada para exportar.")
+                return
             df = pd.DataFrame(data, columns=list(COLS))
             df.to_excel(path, index=False)
+        except DatabaseError as e:
+            _err(self, "Exportar Excel", f"Erro na consulta para exportação.\n\n{e}")
+            return
         except Exception as e:
             _err(self, "Exportar Excel", f"Falhou ao exportar.\n\n{e}")
             return

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 APP_TITLE = "Valorização de Estoque"
 DB = dict(dbname="Almoxarifado", user="Ti", password="jj00tt", host="10.2.149.7")
+SEARCH_LIMIT = 500
 
 def _err(self, title, msg): QMessageBox.critical(self, title, msg)
 
@@ -75,14 +76,16 @@ class BuscaValorDialog(QDialog):
                         WHERE valor_un = 0
                           AND (UPPER(codigo) LIKE %s OR UPPER(descricao) LIKE %s)
                         ORDER BY descricao
-                    """, (f"%{termo}%", f"%{termo}%"))
+                        LIMIT %s
+                    """, (f"%{termo}%", f"%{termo}%", SEARCH_LIMIT))
                 else:
                     self.cursor.execute("""
                         SELECT codigo, descricao, saldo
                         FROM produtos
                         WHERE valor_un = 0
                         ORDER BY descricao
-                    """)
+                        LIMIT %s
+                    """, (SEARCH_LIMIT,))
             else:
                 if termo:
                     self.cursor.execute("""
@@ -90,27 +93,30 @@ class BuscaValorDialog(QDialog):
                         FROM produtos
                         WHERE UPPER(codigo) LIKE %s OR UPPER(descricao) LIKE %s
                         ORDER BY descricao
-                    """, (f"%{termo}%", f"%{termo}%"))
+                        LIMIT %s
+                    """, (f"%{termo}%", f"%{termo}%", SEARCH_LIMIT))
                 else:
                     self.cursor.execute("""
                         SELECT codigo, descricao, saldo
                         FROM produtos
                         ORDER BY descricao
-                    """)
+                        LIMIT %s
+                    """, (SEARCH_LIMIT,))
             rows = self.cursor.fetchall()
         except DatabaseError as e:
             _err(self, "Pesquisar", f"Erro na consulta.\n\n{e}")
             return
 
-        self.tbl.setRowCount(0)
-        for c,d,s in rows:
-            r = self.tbl.rowCount()
-            self.tbl.insertRow(r)
+        sorting = self.tbl.isSortingEnabled()
+        self.tbl.setSortingEnabled(False)
+        self.tbl.setRowCount(len(rows))
+        for r, (c,d,s) in enumerate(rows):
             self.tbl.setItem(r, 0, QTableWidgetItem(str(c).upper()))
             self.tbl.setItem(r, 1, QTableWidgetItem(str(d or "").upper()))
             it_s = QTableWidgetItem(str(s))
             it_s.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.tbl.setItem(r, 2, it_s)
+        self.tbl.setSortingEnabled(sorting)
 
     def selected_code(self) -> str | None:
         r = self.tbl.currentRow()
@@ -272,7 +278,6 @@ class ValorizacaoApp(QMainWindow):
 
             # atualiza valor
             self.cursor.execute("UPDATE produtos SET valor_un=%s WHERE UPPER(codigo)=%s", (novo_valor, codigo))
-            self.conn.commit()
 
             # histórico
             self.cursor.execute("""

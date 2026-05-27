@@ -36,15 +36,22 @@ class FetchWorker(QObject):
         self.params = params
 
     def run(self):
+        conn = None
+        cur = None
         try:
             conn = psycopg2.connect(**DB)
             cur  = conn.cursor()
             cur.execute(self.sql, self.params)
             rows = cur.fetchall()
-            cur.close(); conn.close()
             self.finished.emit(self.req_id, rows)
         except Exception as e:
             self.failed.emit(self.req_id, str(e))
+        finally:
+            try:
+                if cur: cur.close()
+                if conn: conn.close()
+            except Exception:
+                pass
 
 # ---------- App ----------
 class EstoqueBaixoApp(QMainWindow):
@@ -138,6 +145,8 @@ class EstoqueBaixoApp(QMainWindow):
         self._req_id = 0
         self._fetch_thread: QThread | None = None
         self._fetch_worker: FetchWorker | None = None
+        self._active_fetches: list[tuple[QThread, FetchWorker]] = []
+        self._closing = False
 
         # Ligações
         btFiltrar.clicked.connect(self._run_search)
@@ -218,24 +227,44 @@ class EstoqueBaixoApp(QMainWindow):
 
     # ---------- Busca assíncrona ----------
     def _run_search(self):
+        if self._closing:
+            return
         self.statusBar().showMessage("Carregando…", 800)
         sql, params = self._sql_for_list()
         self._req_id += 1
         req_id = self._req_id
 
-        # não tenta dar quit no anterior (pode já ter sido destruído). Ignoramos respostas velhas via req_id.
-        self._fetch_thread = QThread()
-        self._fetch_worker = FetchWorker(req_id, sql, params)
-        self._fetch_worker.moveToThread(self._fetch_thread)
-        self._fetch_thread.started.connect(self._fetch_worker.run)
-        self._fetch_worker.finished.connect(self._on_fetch_ok)
-        self._fetch_worker.failed.connect(self._on_fetch_fail)
-        self._fetch_worker.finished.connect(self._fetch_thread.quit)
-        self._fetch_worker.failed.connect(self._fetch_thread.quit)
-        self._fetch_thread.finished.connect(self._fetch_thread.deleteLater)
-        self._fetch_thread.start()
+        # Mantem referencias das buscas antigas ate terminarem; respostas velhas sao ignoradas por req_id.
+        thread = QThread(self)
+        worker = FetchWorker(req_id, sql, params)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_fetch_ok)
+        worker.failed.connect(self._on_fetch_fail)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda thread=thread, worker=worker: self._cleanup_fetch(thread, worker))
+
+        self._fetch_thread = thread
+        self._fetch_worker = worker
+        self._active_fetches.append((thread, worker))
+        thread.start()
+
+    def _cleanup_fetch(self, thread: QThread, worker: FetchWorker):
+        self._active_fetches = [
+            pair for pair in self._active_fetches
+            if pair[0] is not thread and pair[1] is not worker
+        ]
+        if self._fetch_thread is thread:
+            self._fetch_thread = None
+            self._fetch_worker = None
 
     def _on_fetch_ok(self, req_id: int, rows: list):
+        if self._closing:
+            return
         if req_id != self._req_id:  # resposta antiga
             return
         t = self.table
@@ -269,6 +298,8 @@ class EstoqueBaixoApp(QMainWindow):
         self._update_sel_label()
 
     def _on_fetch_fail(self, req_id: int, err: str):
+        if self._closing:
+            return
         if req_id != self._req_id: return
         _err(self, "Consulta", f"Erro ao carregar.\n\n{err}")
 
@@ -331,6 +362,14 @@ class EstoqueBaixoApp(QMainWindow):
 
     # ---------- Fechamento ----------
     def closeEvent(self, e):
+        self._closing = True
+        for thread, _worker in list(getattr(self, "_active_fetches", [])):
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait(1000)
+            except Exception:
+                pass
         try:
             if hasattr(self, "cursor") and self.cursor: self.cursor.close()
             if hasattr(self, "conn") and self.conn: self.conn.close()

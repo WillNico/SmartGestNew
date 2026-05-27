@@ -16,11 +16,12 @@ from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QDateEdit, QCheckBox, QFileDialog, QStatusBar,
+    QHeaderView, QAbstractItemView, QCheckBox, QFileDialog, QStatusBar,
     QMessageBox, QGroupBox
 )
 
 import shiboken6
+from calendario import CampoData
 
 # Export opcional
 try:
@@ -173,8 +174,7 @@ class InventarioApp(QMainWindow):
         self.edBusca = QLineEdit()
         self.edBusca.setPlaceholderText("Busca rápida (código/descrição)")
 
-        self.dtCorte = QDateEdit()
-        self.dtCorte.setCalendarPopup(True)
+        self.dtCorte = CampoData(self)
         self.dtCorte.setDisplayFormat("dd/MM/yyyy")
         self.dtCorte.setDate(QDate.currentDate())
 
@@ -466,9 +466,12 @@ class InventarioApp(QMainWindow):
         data_corte = datetime(qdate.year(), qdate.month(), qdate.day())
 
         sub = """
-            SELECT codigo, MAX(data_movimentacao) AS ultima_movimentacao, MAX(funcionario) AS funcionario
+            SELECT DISTINCT ON (codigo)
+                codigo,
+                data_movimentacao AS ultima_movimentacao,
+                funcionario
             FROM historico_movimentacoes
-            GROUP BY codigo
+            ORDER BY codigo, data_movimentacao DESC
         """
 
         sql = f"""
@@ -763,7 +766,10 @@ class InventarioApp(QMainWindow):
                 "UPDATE produtos SET saldo=%s, local=%s WHERE UPPER(codigo)=%s",
                 (qtd, local, codigo)
             )
-            self.conn.commit()
+            if self.cursor.rowcount == 0:
+                self.conn.rollback()
+                _err(self, "Validação", "Código da peça não encontrado.")
+                return
 
             self.cursor.execute("""
                 INSERT INTO historico_movimentacoes

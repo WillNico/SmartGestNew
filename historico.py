@@ -11,11 +11,14 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QSplitter, QStatusBar, QDialog, QFormLayout, QLineEdit, QCheckBox,
-    QDateEdit, QMessageBox, QInputDialog, QLineEdit as QLineEditEcho
+    QMessageBox, QInputDialog, QLineEdit as QLineEditEcho
 )
+
+from calendario import CampoData
 
 APP_TITLE = "Histórico de Movimentação"
 SENHA_HISTORICO = "609609"
+MAX_HISTORY_ROWS = 2000
 
 COLS = (
     "codigo", "nome", "data_movimentacao", "tipo_movimentacao", "quantidade_movimentada",
@@ -171,7 +174,7 @@ class HistoricoApp(QMainWindow):
         """
         if where:
             sql += " WHERE " + where
-        sql += " ORDER BY h.data_movimentacao DESC"
+        sql += f" ORDER BY h.data_movimentacao DESC LIMIT {MAX_HISTORY_ROWS}"
 
         try:
             self.cursor.execute(sql, params or ())
@@ -180,9 +183,11 @@ class HistoricoApp(QMainWindow):
             _err(self, "Histórico", f"Não foi possível carregar os dados.\n\n{e}")
             return
 
-        for r in rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+
+        for row, r in enumerate(rows):
             for c, val in enumerate(r):
                 item = QTableWidgetItem("" if val is None else str(val))
                 # alinhamentos
@@ -195,8 +200,12 @@ class HistoricoApp(QMainWindow):
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row, c, item)
 
+        self.table.setSortingEnabled(sorting)
         self.lblCount.setText(f"Registros exibidos: {len(rows)}")
-        self.statusBar().showMessage("Histórico atualizado.", 1500)
+        msg = "Histórico atualizado."
+        if len(rows) == MAX_HISTORY_ROWS:
+            msg = f"Histórico atualizado. Mostrando os {MAX_HISTORY_ROWS} registros mais recentes."
+        self.statusBar().showMessage(msg, 2500)
 
     # ---------- filtro ----------
     def _open_filter(self):
@@ -225,8 +234,8 @@ class HistoricoApp(QMainWindow):
 
         # Datas
         wDates = QWidget(dlg); hl = QHBoxLayout(wDates); hl.setContentsMargins(0,0,0,0)
-        boxStart = QCheckBox("Data Inicial"); deStart = QDateEdit(); deStart.setDisplayFormat("dd/MM/yyyy"); deStart.setCalendarPopup(True)
-        boxEnd   = QCheckBox("Data Final");   deEnd   = QDateEdit(); deEnd.setDisplayFormat("dd/MM/yyyy"); deEnd.setCalendarPopup(True)
+        boxStart = QCheckBox("Data Inicial"); deStart = CampoData(dlg); deStart.setDisplayFormat("dd/MM/yyyy")
+        boxEnd   = QCheckBox("Data Final");   deEnd   = CampoData(dlg); deEnd.setDisplayFormat("dd/MM/yyyy")
         if self.last_filter["start_date"]:
             try:
                 d = datetime.strptime(self.last_filter["start_date"], "%d/%m/%Y")
@@ -271,6 +280,7 @@ class HistoricoApp(QMainWindow):
                 params.append(f"%{value}%")
 
             start_str = end_str = None
+            start_dt = end_dt = None
             if boxStart.isChecked():
                 d = deStart.date()
                 start_dt = datetime(d.year(), d.month(), d.day())
@@ -279,10 +289,14 @@ class HistoricoApp(QMainWindow):
                 start_str = start_dt.strftime("%d/%m/%Y")
             if boxEnd.isChecked():
                 d = deEnd.date()
-                end_dt = datetime(d.year(), d.month(), d.day())
+                end_dt = datetime(d.year(), d.month(), d.day(), 23, 59, 59, 999999)
                 conds.append("h.data_movimentacao <= %s")
                 params.append(end_dt)
                 end_str = end_dt.strftime("%d/%m/%Y")
+
+            if start_dt and end_dt and start_dt > end_dt:
+                _err(self, "Filtro", "Data inicial não pode ser maior que a data final.")
+                return
 
             where = " AND ".join(conds) if conds else None
             self.last_filter = {"filters": filled, "start_date": start_str, "end_date": end_str}

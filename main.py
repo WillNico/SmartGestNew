@@ -6,17 +6,14 @@ from __future__ import annotations
 import sys
 import importlib
 import traceback
-from PySide6.QtWidgets import QLineEdit
 
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QAction, QIcon, QPalette, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QGridLayout,
     QVBoxLayout, QHBoxLayout, QMessageBox, QInputDialog, QSizePolicy,
-    QStatusBar, QGraphicsDropShadowEffect
+    QStatusBar, QGraphicsDropShadowEffect, QLineEdit
 )
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
 
 APP_TITLE = "SmartGest"
 APP_SUBTITLE = "Gestor de Estoque"
@@ -163,9 +160,6 @@ class MainWindow(QMainWindow):
         # tema inicial (claro)
         QApplication.setPalette(make_light_palette())
 
-        # preload opcional do módulo de EstoqueAdm (para abrir mais rápido)
-        QTimer.singleShot(300, self._preload_estoque_adm)
-
         # maximiza
         self.showMaximized()
 
@@ -254,8 +248,9 @@ class MainWindow(QMainWindow):
 
         # 2) tenta classes mais comuns
         candidate_classes = (
-            "MovimentacaoApp", "EntradasApp", "CadastroApp", "HistoricoApp",
-            "ComprasApp", "FormularioApp", "Estoque", "EstoqueAdm", "EstoqueBaixoApp"
+            "MovimentacaoApp", "EntradasApp", "CadastroPecaApp", "CadastroApp",
+            "HistoricoApp", "EstoqueApp", "EstoqueAdmApp", "EstoqueBaixoApp",
+            "InventarioApp", "ValorizacaoApp", "ComprasApp", "FormularioApp"
         )
         for cname in candidate_classes:
             cls = getattr(module, cname, None)
@@ -295,13 +290,6 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
-
-    def _preload_estoque_adm(self):
-        try:
-            importlib.import_module("estoque_adm")
-        except Exception:
-            # se falhar, vida que segue — é só um preload
-            pass
 
     # ---------- handlers dos botões ----------
     def abrir_movimentacao(self):

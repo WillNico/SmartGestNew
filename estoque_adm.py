@@ -220,6 +220,8 @@ class EstoqueAdmApp(QMainWindow):
         self._req_id = 0
         self._fetch_thread: QThread | None = None
         self._fetch_worker: FetchWorker | None = None
+        self._pending_search = False
+        self._closing = False
 
         # primeira carga
         QTimer.singleShot(100, self._run_search)
@@ -279,25 +281,20 @@ class EstoqueAdmApp(QMainWindow):
 
     # ---------- busca ----------
     def _run_search(self):
-        self.statusBar().showMessage("Carregando…", 1000)
-        self._req_id += 1
-        req_id = self._req_id
-
-        # encerra thread anterior com segurança
-        if self._fetch_thread is not None:
-            try:
-                if isValid(self._fetch_thread) and self._fetch_thread.isRunning():
-                    self._fetch_thread.quit()
-                    self._fetch_thread.wait(300)
-            except RuntimeError:
-                pass
-            finally:
-                self._fetch_thread = None
-                self._fetch_worker = None
+        if self._closing:
+            return
+        if self._fetch_thread is not None and isValid(self._fetch_thread) and self._fetch_thread.isRunning():
+            self._pending_search = True
+            self.statusBar().showMessage("Consulta em andamento. Atualizando em seguida…", 1200)
+            return
 
         # limpa tabela antes da nova carga
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
+
+        self.statusBar().showMessage("Carregando…", 1000)
+        self._req_id += 1
+        req_id = self._req_id
 
         # cria nova thread
         thread = QThread(self)
@@ -324,6 +321,8 @@ class EstoqueAdmApp(QMainWindow):
         thread.start()
 
     def _on_fetch_ok(self, req_id: int, rows: list):
+        if self._closing:
+            return
         if req_id != self._req_id:
             return
     
@@ -350,6 +349,8 @@ class EstoqueAdmApp(QMainWindow):
         self.statusBar().showMessage(f"{len(rows)} registros carregados.", 1500)
 
     def _on_fetch_fail(self, req_id: int, err: str):
+        if self._closing:
+            return
         if req_id != self._req_id: return
         _err(self, "Busca", f"Erro ao carregar dados.\n\n{err}")
 
@@ -368,6 +369,9 @@ class EstoqueAdmApp(QMainWindow):
     def _clear_fetch_refs(self):
         self._fetch_thread = None
         self._fetch_worker = None
+        if self._pending_search and not self._closing:
+            self._pending_search = False
+            QTimer.singleShot(0, self._run_search)
 
     # ---------- exportações (agora puxam TUDO do banco quando não for 'selecionados') ----------
     def _export_pdf(self, selected: bool):
@@ -507,7 +511,6 @@ class EstoqueAdmApp(QMainWindow):
                 "UPDATE produtos SET valor_un=%s, local=%s WHERE UPPER(codigo)=%s",
                 (novo_valor, novo_local, codigo.upper())
             )
-            self.conn.commit()
             self.cursor.execute("""
                 INSERT INTO historico_movimentacoes
                 (codigo, nome, data_movimentacao, tipo_movimentacao, quantidade_movimentada, maquina, valor_unitario)
@@ -553,6 +556,13 @@ class EstoqueAdmApp(QMainWindow):
 
     # ---------- fechar ----------
     def closeEvent(self, e):
+        self._closing = True
+        try:
+            if self._fetch_thread is not None and isValid(self._fetch_thread) and self._fetch_thread.isRunning():
+                self._fetch_thread.quit()
+                self._fetch_thread.wait(1000)
+        except Exception:
+            pass
         try:
             if hasattr(self, "cursor") and self.cursor: self.cursor.close()
             if hasattr(self, "conn") and self.conn: self.conn.close()
